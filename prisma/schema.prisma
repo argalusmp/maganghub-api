@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Province {
+  kode_propinsi String       @id @db.Text
+  id_propinsi   String?      @db.Uuid
+  nama_propinsi String       @db.Text
+
+  internships   Internship[]
+
+  @@map("provinces")
+}
+
+model Internship {
+  id_posisi         String            @id @db.Uuid
+  posisi            String?           @db.Text
+  deskripsi_posisi  String?           @db.Text
+  jumlah_kuota      Int?
+  jumlah_terdaftar  Int?
+  program_studi     String[]          @default([])
+  jenjang           String[]          @default([])
+  nama_perusahaan   String?           @db.Text
+  kode_provinsi     String?           @db.Text
+  nama_provinsi     String?           @db.Text
+  kode_kabupaten    String?           @db.Text
+  nama_kabupaten    String?           @db.Text
+  pendaftaran_awal  DateTime?         @db.Timestamptz(6)
+  pendaftaran_akhir DateTime?         @db.Timestamptz(6)
+  mulai             DateTime?         @db.Timestamptz(6)
+  selesai           DateTime?         @db.Timestamptz(6)
+  agency            String?           @db.Text
+  sub_agency        String?           @db.Text
+  created_at        DateTime?         @db.Timestamptz(6)
+  updated_at        DateTime?         @db.Timestamptz(6)
+  source_raw        Json?
+  first_seen_at     DateTime?         @db.Timestamptz(6)
+  last_synced_at    DateTime?         @db.Timestamptz(6)
+  is_active         Boolean           @default(true)
+  tsv               Unsupported("tsvector")?
+
+  province Province? @relation(fields: [kode_provinsi], references: [kode_propinsi])
+  events   NewInternshipEvent[]
+
+  @@index([kode_provinsi, nama_kabupaten], map: "idx_internships_provinsi_kabupaten")
+  @@index([pendaftaran_akhir], map: "idx_internships_pendaftaran_akhir")
+  @@index([jumlah_kuota], map: "idx_internships_jumlah_kuota")
+  @@index([jumlah_terdaftar], map: "idx_internships_jumlah_terdaftar")
+  @@index([first_seen_at], map: "idx_internships_first_seen_at")
+  @@index([updated_at], map: "idx_internships_updated_at")
+  @@map("internships")
+}
+
+model SyncState {
+  key   String   @id @db.Text
+  value DateTime? @db.Timestamptz(6)
+
+  @@map("sync_state")
+}
+
+model SyncRun {
+  id                String    @id @db.Uuid
+  started_at        DateTime  @default(now()) @db.Timestamptz(6)
+  finished_at       DateTime? @db.Timestamptz(6)
+  pages_fetched     Int       @default(0)
+  items_inserted    Int       @default(0)
+  items_updated     Int       @default(0)
+  items_deactivated Int       @default(0)
+  status            String    @db.Text
+  note              String?   @db.Text
+
+  @@map("sync_runs")
+}
+
+model NewInternshipEvent {
+  id        BigInt    @id @default(autoincrement())
+  id_posisi String    @db.Uuid
+  seen_at   DateTime  @default(now()) @db.Timestamptz(6)
+
+  internship Internship @relation(fields: [id_posisi], references: [id_posisi], onDelete: Cascade)
+
+  @@index([seen_at], map: "idx_new_internship_events_seen_at")
+  @@map("new_internship_events")
+}

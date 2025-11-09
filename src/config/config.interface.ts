@@ -1,0 +1,19 @@
+export interface EtlConfig {
+  fullCron: string;
+  incrementalCron: string;
+  maxPages: number;
+  limit: number;
+  newWindowHours: number;
+  requestDelayMs: number;
+  stopThreshold: number;
+}
+
+export interface AppConfig {
+  nodeEnv: string;
+  port: number;
+  timezone: string;
+  databaseUrl: string;
+  maganghubBase: string;
+  frontendOrigin: string;
+  etl: EtlConfig;
+}

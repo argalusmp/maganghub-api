@@ -1,98 +1,122 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# MagangHub API Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Production-ready NestJS service that ingests public internship data from the MagangHub APIs, persists it in Supabase Postgres via Prisma, and exposes rich search and facet endpoints for the frontend.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## What Was Built
 
-## Description
+- **Config & bootstrap**: Global `@nestjs/config` setup with Joi validation, timezone enforcement (`Asia/Jakarta`), global validation pipe, and CORS configuration.
+- **Prisma/Supabase**: Schema for provinces, internships, sync metadata, and new-internship events plus SQL migration for GIN/BTREE indexes and Indonesian FTS triggers.
+- **HTTP + scheduling**: Shared Axios client (30s timeout) and `@nestjs/schedule` cron registration that reads cron expressions from `.env`.
+- **Sync module**:
+  - Province importer (`POST /sync/provinces`).
+  - Incremental sync (`POST /sync/incremental`, hourly cron) with sliding watermark, page window, and early-stop threshold.
+  - Full sync (`POST /sync/full`, daily cron) that sweeps inactive rows.
+  - Metrics logged to `sync_runs` with insert/update/deactivate counters.
+- **Vacancy APIs**: `/search` with FTS, province/kabupaten filters, jenjang/prodi array filters, status, “only new”, and multiple sort orders; `/vacancies/:id` for detail view.
+- **Facets**: `/facets/provinces` (dimension table) and `/facets/kabupaten` (derived from internships).
+- **Health**: `/health` returns `{ status: 'ok' }`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Requirements
 
-## Project setup
+- Node.js 20+
+- Supabase (or any Postgres 13+) connection strings exported via:
+  - `DATABASE_URL` → PgBouncer/pooling connection (runtime & Prisma client)
+  - `DIRECT_URL` → direct database port (Prisma migrations)
+- `.env` at project root (see values provided by the user)
 
-```bash
-$ npm install
+```env
+# Connect via Supabase PgBouncer (runtime + Prisma client)
+DATABASE_URL="postgresql://postgres.aptyejjdlltdmabfnuae:[YOUR-PASSWORD]@aws-1-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
+
+# Direct connection used by Prisma migrate (non-pooled)
+DIRECT_URL="postgresql://postgres.aptyejjdlltdmabfnuae:[YOUR-PASSWORD]@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
 ```
 
-## Compile and run the project
+## Install Dependencies
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
 ```
 
-## Run tests
+## First-Time Database Setup
 
 ```bash
-# unit tests
-$ npm run test
+# Generate Prisma client based on prisma/schema.prisma
+npm run prisma:generate
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+# Apply the SQL migration (tables, indexes, FTS trigger)
+npm run prisma:migrate
 ```
 
-## Deployment
+Running these for the first time will:
+1. Generate `node_modules/@prisma/client` with the schema typings.
+2. Connect through `DIRECT_URL` to create the `provinces`, `internships`, `sync_state`, `sync_runs`, and `new_internship_events` tables in Supabase.
+3. Install database indexes and the `internships_tsv_refresh` trigger used by search.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Development Scripts
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# start Nest in watch mode with schedulers active
+npm run start:dev
+
+# production build + run
+npm run build && npm run start:prod
+
+# run Jest suites (unit + e2e)
+npm run test
+npm run test:e2e
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Typical Workflow
 
-## Resources
+1. **Configure environment** in `.env` (DB URL, cron expressions, limits, etc.).
+2. **Install + generate Prisma** (`npm install` + `npm run prisma:generate`).
+3. **Apply migrations** to Supabase (`npm run prisma:migrate`).
+4. **Start the API** with `npm run start:dev` or `start:prod`.
+5. **Seed data**:
+   - `POST /sync/provinces` → upserts 40 provinces.
+   - `POST /sync/incremental` → fetches up to `ETL_MAX_PAGES` (default 3) from MagangHub, inserts/updates internships, populates `first_seen_at`, logs metrics, and advances the watermark.
+   - `POST /sync/full` → crawls all pages, reactivates current rows, and deactivates anything not seen this run.
+6. **Query data** using `/search`, `/facets/*`, and `/vacancies/:id`.
 
-Check out a few resources that may come in handy when working with NestJS:
+## Search Endpoint Reference
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```
+GET /search
+  q                → Full-text search (Indonesian dictionary)
+  kode_provinsi    → Exact match
+  kabupaten        → Case-insensitive contains
+  jenjang          → CSV list matched against array column
+  prodi            → CSV list matched against array column
+  status           → open | closed | all (default all)
+  only_new         → true limits to ROWs within NEW_WINDOW_HOURS (default 72)
+  sort             → terbaru | deadline_asc | kuota_desc | peminat_desc
+  page, limit      → Pagination (default 1, 20)
+```
+Response structure:
+```json
+{
+  "meta": { "page": 1, "limit": 20, "total": 123 },
+  "data": [ { "id_posisi": "...", "posisi": "...", ... } ]
+}
+```
 
-## Support
+## Cron Jobs
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+- Incremental sync: `ETL_INC_CRON` (default `0 * * * *`, hourly) with sliding window and watermark stop threshold.
+- Full sync: `ETL_FULL_CRON` (default `0 2 * * *`, daily 02:00 WIB) with mark-and-sweep.
 
-## Stay in touch
+Both cron jobs respect `TZ=Asia/Jakarta` and log failures to Nest logger plus `sync_runs.note`.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+## Testing Notes
 
-## License
+Running Jest inside WSL1 isn’t supported. Execute `npm run test` / `npm run test:e2e` on WSL2 or a Linux/Unix environment to exercise the mocked HTTP specs and route wiring.
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## Docs & Health
+
+```
+GET /docs   → Swagger UI with the API contract
+GET /health → { "status": "ok" }
+```
+
+Use this for container/platform readiness probes.
