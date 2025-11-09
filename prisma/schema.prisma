@@ -43,6 +43,7 @@ model Internship {
   first_seen_at     DateTime?         @db.Timestamptz(6)
   last_synced_at    DateTime?         @db.Timestamptz(6)
   is_active         Boolean           @default(true)
+  url_original      String?           @db.Text
   tsv               Unsupported("tsvector")?
 
   province Province? @relation(fields: [kode_provinsi], references: [kode_propinsi])
