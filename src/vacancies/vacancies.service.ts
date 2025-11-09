@@ -15,6 +15,34 @@ type SearchResult = {
   data: any[];
 };
 
+const VACANCY_SELECT = Prisma.sql`
+  id_posisi,
+  posisi,
+  deskripsi_posisi,
+  jumlah_kuota,
+  jumlah_terdaftar,
+  program_studi,
+  jenjang,
+  nama_perusahaan,
+  kode_provinsi,
+  nama_provinsi,
+  kode_kabupaten,
+  nama_kabupaten,
+  pendaftaran_awal,
+  pendaftaran_akhir,
+  mulai,
+  selesai,
+  agency,
+  sub_agency,
+  created_at,
+  updated_at,
+  source_raw,
+  first_seen_at,
+  last_synced_at,
+  is_active,
+  url_original
+`;
+
 @Injectable()
 export class VacanciesService {
   constructor(
@@ -64,7 +92,7 @@ export class VacanciesService {
     `);
 
     const rows = await this.prisma.$queryRaw<any[]>(Prisma.sql`
-      SELECT *
+      SELECT ${VACANCY_SELECT}
       FROM public.internships
       ${whereSql}
       ${orderSql}
