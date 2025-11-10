@@ -64,6 +64,7 @@ interface VacancyFetchResult {
 @Injectable()
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
+  private readonly batchSaveConcurrency = 10;
 
   constructor(
     private readonly httpService: HttpService,
@@ -208,32 +209,41 @@ export class SyncService implements OnModuleInit {
     };
 
     const etlConfig = this.config.etl;
+    const processedIds = new Set<string>();
+    let completedFullScan = false;
 
     try {
       let page = 1;
       let lastPage = Number.MAX_SAFE_INTEGER;
-      while (page <= lastPage) {
+      let hasMorePages = true;
+
+      while (page <= lastPage && hasMorePages) {
         const result = await this.fetchVacancies(page, etlConfig.limit);
-        if (!result.items.length) break;
+        if (!result.items.length) {
+          hasMorePages = false;
+          break;
+        }
 
         metrics.pagesFetched += 1;
-        for (const item of result.items) {
-          const normalized = this.normalizeVacancy(item);
-          if (!normalized) continue;
-          const action = await this.saveVacancy(normalized);
-          if (action === 'inserted') {
-            metrics.itemsInserted += 1;
-          } else if (action === 'updated') {
-            metrics.itemsUpdated += 1;
-          }
-        }
+
+        const normalizedBatch = result.items
+          .map((item) => this.normalizeVacancy(item))
+          .filter((vacancy): vacancy is VacancyPayload => Boolean(vacancy));
+
+        await this.processVacancyBatch(normalizedBatch, metrics, processedIds);
 
         const totalPages =
           result.pagination.last_page ?? result.pagination.total_page ?? lastPage;
         if (Number.isFinite(totalPages)) {
           lastPage = Number(totalPages);
         }
-        if (result.pagination.last_page === undefined && result.items.length < etlConfig.limit) {
+
+        const reachedLastPage = Number.isFinite(totalPages)
+          ? page >= Number(totalPages)
+          : result.items.length < etlConfig.limit;
+
+        if (reachedLastPage) {
+          hasMorePages = false;
           break;
         }
 
@@ -241,26 +251,28 @@ export class SyncService implements OnModuleInit {
         await this.delay(etlConfig.requestDelayMs);
       }
 
-      const now = new Date();
-      const deactivated = await this.prisma.internship.updateMany({
-        where: {
-          last_synced_at: { lt: metrics.startedAt },
-        },
-        data: { is_active: false, last_synced_at: now },
-      });
-      metrics.itemsDeactivated = deactivated.count;
+      completedFullScan = !hasMorePages || page > lastPage;
 
-      const latestSeen = await this.prisma.internship.findFirst({
-        select: { updated_at: true },
-        orderBy: { updated_at: 'desc' },
-      });
-      if (latestSeen?.updated_at) {
-        await this.setWatermark(latestSeen.updated_at);
+      if (completedFullScan) {
+        await this.deactivateMissingVacancies(metrics, processedIds);
+
+        const latestSeen = await this.prisma.internship.findFirst({
+          select: { updated_at: true },
+          orderBy: { updated_at: 'desc' },
+        });
+        if (latestSeen?.updated_at) {
+          await this.setWatermark(latestSeen.updated_at);
+        }
+      } else {
+        this.logger.warn(
+          'Full sync ended before all pages were processed; skipping deactivation step',
+        );
       }
     } catch (error) {
       const err = error as Error;
       metrics.status = 'failed';
       metrics.note = err.message;
+      completedFullScan = false;
       this.logger.error(`Full sync failed: ${err.message}`, err.stack);
     } finally {
       metrics.finishedAt = new Date();
@@ -617,6 +629,61 @@ export class SyncService implements OnModuleInit {
       }
       throw error;
     }
+  }
+
+  private async processVacancyBatch(
+    vacancies: VacancyPayload[],
+    metrics: SyncRunMetrics,
+    processedIds: Set<string>,
+  ): Promise<void> {
+    if (!vacancies.length) {
+      return;
+    }
+
+    for (const chunk of this.chunkArray(vacancies, this.batchSaveConcurrency)) {
+      await Promise.all(
+        chunk.map(async (vacancy) => {
+          const action = await this.saveVacancy(vacancy);
+          processedIds.add(vacancy.id_posisi);
+          if (action === 'inserted') {
+            metrics.itemsInserted += 1;
+          } else {
+            metrics.itemsUpdated += 1;
+          }
+        }),
+      );
+    }
+  }
+
+  private chunkArray<T>(items: T[], size: number): T[][] {
+    if (size <= 0) {
+      return [items];
+    }
+    const chunks: T[][] = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  private async deactivateMissingVacancies(
+    metrics: SyncRunMetrics,
+    processedIds: Set<string>,
+  ): Promise<void> {
+    const now = new Date();
+    const whereCondition: Prisma.InternshipWhereInput = {
+      last_synced_at: { lt: metrics.startedAt },
+    };
+
+    if (processedIds.size > 0) {
+      whereCondition.id_posisi = { notIn: Array.from(processedIds) };
+    }
+
+    const deactivated = await this.prisma.internship.updateMany({
+      where: whereCondition,
+      data: { is_active: false, last_synced_at: now },
+    });
+    metrics.itemsDeactivated = deactivated.count;
   }
 
   private async delay(ms: number): Promise<void> {
