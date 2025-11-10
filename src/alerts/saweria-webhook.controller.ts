@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { AppConfigService } from '../config/app-config.service';
 import { AlertGateway } from './alert.gateway';
-import { SaweriaDonationPayload } from './interfaces/saweria-donation-payload.interface';
+import type { SaweriaDonationPayload } from './interfaces/saweria-donation-payload.interface';
 
 @Controller('webhook')
 export class SaweriaWebhookController {
