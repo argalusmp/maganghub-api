@@ -30,6 +30,10 @@ export class AppConfigService {
     return this.configService.get('frontendOrigin', { infer: true });
   }
 
+  get saweriaSecretToken(): string {
+    return this.configService.get('saweriaSecretToken', { infer: true });
+  }
+
   get etl(): EtlConfig {
     return this.configService.get('etl', { infer: true });
   }

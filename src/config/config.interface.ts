@@ -15,5 +15,6 @@ export interface AppConfig {
   databaseUrl: string;
   maganghubBase: string;
   frontendOrigin: string;
+  saweriaSecretToken: string;
   etl: EtlConfig;
 }

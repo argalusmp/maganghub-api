@@ -27,6 +27,7 @@ import { AppConfigService } from './app-config.service';
         NEW_WINDOW_HOURS: Joi.number().integer().min(1).default(72),
         REQUEST_DELAY_MS: Joi.number().integer().min(0).default(800),
         STOP_THRESHOLD: Joi.number().integer().min(1).default(10),
+        SAWERIA_SECRET_TOKEN: Joi.string().default(''),
       }),
     }),
   ],

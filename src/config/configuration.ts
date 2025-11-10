@@ -25,6 +25,7 @@ export const configuration = (): AppConfig => {
     databaseUrl: env.DATABASE_URL ?? '',
     maganghubBase: env.MAGANGHUB_BASE ?? 'https://maganghub.kemnaker.go.id/be/v1/api',
     frontendOrigin: env.FRONTEND_ORIGIN ?? '*',
+    saweriaSecretToken: env.SAWERIA_SECRET_TOKEN ?? '',
     etl: {
       fullCron: env.ETL_FULL_CRON ?? '0 2 * * *',
       incrementalCron: env.ETL_INC_CRON ?? '0 * * * *',
