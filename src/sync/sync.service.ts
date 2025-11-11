@@ -114,6 +114,23 @@ export class SyncService implements OnModuleInit {
     return { total: counter };
   }
 
+  private async ensureProvincesSynced(): Promise<void> {
+    const provinceCount = await this.prisma.province.count();
+
+    if (provinceCount === 0) {
+      this.logger.log('No provinces found in database. Running province sync...');
+      const result = await this.syncProvinces();
+      this.logger.log(`Province sync completed: ${result.total} provinces synced`);
+    } else if (provinceCount < 30) {
+      // Less than expected number of provinces (Indonesia has 34 provinces)
+      this.logger.warn(`Only ${provinceCount} provinces found. Expected ~34. Re-running province sync...`);
+      const result = await this.syncProvinces();
+      this.logger.log(`Province sync completed: ${result.total} provinces synced (total now: ${provinceCount + result.total})`);
+    } else {
+      this.logger.debug(`Provinces already synced: ${provinceCount} provinces found`);
+    }
+  }
+
   async runIncrementalSync(triggeredByCron = false): Promise<SyncRunMetrics> {
     const run = await this.startRunRecord('incremental');
     const metrics: SyncRunMetrics = {
@@ -221,6 +238,9 @@ export class SyncService implements OnModuleInit {
       itemsDeactivated: 0,
       status: 'success',
     };
+
+    // Ensure provinces are synced before running full sync
+    await this.ensureProvincesSynced();
 
     const etlConfig = this.config.etl;
     const processedIds = new Set<string>();
@@ -678,6 +698,24 @@ export class SyncService implements OnModuleInit {
 
   private async saveVacancy(vacancy: VacancyPayload): Promise<'inserted' | 'updated'> {
     const now = new Date();
+
+    // Validate kode_provinsi exists in provinces table
+    let validatedKodeProvinsi = vacancy.kode_provinsi;
+    if (validatedKodeProvinsi) {
+      const provinceExists = await this.prisma.province.findUnique({
+        where: { kode_propinsi: validatedKodeProvinsi },
+        select: { kode_propinsi: true },
+      });
+
+      if (!provinceExists) {
+        this.logger.warn(
+          `Province with kode_propinsi '${validatedKodeProvinsi}' not found for vacancy ${vacancy.id_posisi}. ` +
+          `Setting kode_provinsi to null. Company: ${vacancy.nama_perusahaan}, Position: ${vacancy.posisi}`
+        );
+        validatedKodeProvinsi = null;
+      }
+    }
+
     try {
       await this.prisma.internship.create({
         data: {
@@ -689,7 +727,7 @@ export class SyncService implements OnModuleInit {
           program_studi: vacancy.program_studi,
           jenjang: vacancy.jenjang,
           nama_perusahaan: vacancy.nama_perusahaan,
-          kode_provinsi: vacancy.kode_provinsi,
+          kode_provinsi: validatedKodeProvinsi,
           nama_provinsi: vacancy.nama_provinsi,
           kode_kabupaten: vacancy.kode_kabupaten,
           nama_kabupaten: vacancy.nama_kabupaten,
@@ -726,7 +764,7 @@ export class SyncService implements OnModuleInit {
             program_studi: vacancy.program_studi,
             jenjang: vacancy.jenjang,
             nama_perusahaan: vacancy.nama_perusahaan,
-            kode_provinsi: vacancy.kode_provinsi,
+            kode_provinsi: validatedKodeProvinsi,
             nama_provinsi: vacancy.nama_provinsi,
             kode_kabupaten: vacancy.kode_kabupaten,
             nama_kabupaten: vacancy.nama_kabupaten,
