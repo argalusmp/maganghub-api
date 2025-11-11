@@ -7,7 +7,9 @@ type NumericKeys =
   | 'NEW_WINDOW_HOURS'
   | 'REQUEST_DELAY_MS'
   | 'STOP_THRESHOLD'
-  | 'HTTP_TIMEOUT_MS';
+  | 'HTTP_TIMEOUT_MS'
+  | 'HTTP_MAX_RETRIES'
+  | 'HTTP_RETRY_DELAY_MS';
 
 type Env = NodeJS.ProcessEnv & Partial<Record<NumericKeys, string>>;
 
@@ -36,6 +38,8 @@ export const configuration = (): AppConfig => {
       requestDelayMs: toNumber(env.REQUEST_DELAY_MS, 800),
       stopThreshold: toNumber(env.STOP_THRESHOLD, 100),
       httpTimeoutMs: toNumber(env.HTTP_TIMEOUT_MS, 60_000),
+      maxRetries: toNumber(env.HTTP_MAX_RETRIES, 3),
+      retryDelayMs: toNumber(env.HTTP_RETRY_DELAY_MS, 2000),
     },
   };
 };

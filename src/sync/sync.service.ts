@@ -5,7 +5,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { CronJob } from '@nestjs/schedule/node_modules/cron';
 import { randomUUID } from 'crypto';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, catchError, retry, timer } from 'rxjs';
+import { AxiosError } from 'axios';
 import { AppConfigService } from '../config/app-config.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -78,8 +79,8 @@ export class SyncService implements OnModuleInit {
   }
 
   async syncProvinces(): Promise<{ total: number }> {
-    const response = await firstValueFrom(
-      this.httpService.get('/list/provinces', {
+    const response = await this.fetchWithRetry<any>(
+      () => this.httpService.get('/list/provinces', {
         params: {
           order_by: 'nama_propinsi',
           order_direction: 'ASC',
@@ -87,6 +88,7 @@ export class SyncService implements OnModuleInit {
           limit: 40,
         },
       }),
+      'fetch provinces',
     );
 
     const payload = this.extractArray(response.data);
@@ -181,7 +183,19 @@ export class SyncService implements OnModuleInit {
       const err = error as Error;
       metrics.status = 'failed';
       metrics.note = err.message;
-      this.logger.error(`Incremental sync failed: ${err.message}`, err.stack);
+      
+      // Log more details about the error
+      if (err instanceof Error && 'response' in err) {
+        const axiosError = err as AxiosError;
+        const status = axiosError.response?.status;
+        const statusText = axiosError.response?.statusText;
+        this.logger.error(
+          `Incremental sync failed: ${err.message} [HTTP ${status} ${statusText}]`,
+          err.stack,
+        );
+      } else {
+        this.logger.error(`Incremental sync failed: ${err.message}`, err.stack);
+      }
     } finally {
       metrics.finishedAt = new Date();
       await this.finishRunRecord(metrics);
@@ -273,7 +287,19 @@ export class SyncService implements OnModuleInit {
       metrics.status = 'failed';
       metrics.note = err.message;
       completedFullScan = false;
-      this.logger.error(`Full sync failed: ${err.message}`, err.stack);
+      
+      // Log more details about the error
+      if (err instanceof Error && 'response' in err) {
+        const axiosError = err as AxiosError;
+        const status = axiosError.response?.status;
+        const statusText = axiosError.response?.statusText;
+        this.logger.error(
+          `Full sync failed: ${err.message} [HTTP ${status} ${statusText}]`,
+          err.stack,
+        );
+      } else {
+        this.logger.error(`Full sync failed: ${err.message}`, err.stack);
+      }
     } finally {
       metrics.finishedAt = new Date();
       await this.finishRunRecord(metrics);
@@ -373,20 +399,100 @@ export class SyncService implements OnModuleInit {
   }
 
   private async fetchVacancies(page: number, limit: number): Promise<VacancyFetchResult> {
-    const response = await firstValueFrom(
-      this.httpService.get('/list/vacancies-aktif', {
+    const response = await this.fetchWithRetry<any>(
+      () => this.httpService.get('/list/vacancies-aktif', {
         params: {
           order_direction: 'DESC',
           page,
           limit,
         },
       }),
+      `fetch vacancies page ${page}`,
     );
 
     return {
       items: this.extractArray(response.data),
       pagination: this.extractPagination(response.data),
     };
+  }
+
+  private async fetchWithRetry<T>(
+    requestFn: () => any,
+    operation: string,
+  ): Promise<T> {
+    let lastError: Error | null = null;
+    const maxRetries = this.config.etl.maxRetries;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await firstValueFrom(requestFn()) as T;
+      } catch (error) {
+        lastError = error as Error;
+        const axiosError = error as AxiosError;
+        const status = axiosError.response?.status;
+        const isRetryable = this.isRetryableError(axiosError);
+
+        this.logger.warn(
+          `${operation} failed (attempt ${attempt}/${maxRetries}): ${axiosError.message}` +
+          (status ? ` [HTTP ${status}]` : ''),
+        );
+
+        // Don't retry if error is not retryable (e.g., 4xx errors except 429)
+        if (!isRetryable) {
+          this.logger.error(
+            `${operation} failed with non-retryable error: ${axiosError.message}`,
+          );
+          throw error;
+        }
+
+        // Don't wait after last attempt
+        if (attempt < maxRetries) {
+          const delayMs = this.calculateBackoff(attempt);
+          this.logger.log(`Retrying ${operation} in ${delayMs}ms...`);
+          await this.delay(delayMs);
+        }
+      }
+    }
+
+    this.logger.error(
+      `${operation} failed after ${maxRetries} attempts: ${lastError?.message}`,
+    );
+    throw lastError;
+  }
+
+  private isRetryableError(error: AxiosError): boolean {
+    // No response means network error - retryable
+    if (!error.response) {
+      return true;
+    }
+
+    const status = error.response.status;
+
+    // 5xx errors are retryable (server errors)
+    if (status >= 500) {
+      return true;
+    }
+
+    // 429 Too Many Requests is retryable
+    if (status === 429) {
+      return true;
+    }
+
+    // 408 Request Timeout is retryable
+    if (status === 408) {
+      return true;
+    }
+
+    // 4xx client errors are generally not retryable
+    return false;
+  }
+
+  private calculateBackoff(attempt: number): number {
+    // Exponential backoff with jitter
+    const baseDelay = this.config.etl.retryDelayMs;
+    const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
+    const jitter = Math.random() * 1000; // 0-1000ms jitter
+    return Math.min(exponentialDelay + jitter, 30000); // Max 30 seconds
   }
 
   private extractArray(payload: any): any[] {

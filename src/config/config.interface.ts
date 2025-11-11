@@ -7,6 +7,8 @@ export interface EtlConfig {
   requestDelayMs: number;
   stopThreshold: number;
   httpTimeoutMs: number;
+  maxRetries: number;
+  retryDelayMs: number;
 }
 
 export interface AppConfig {
