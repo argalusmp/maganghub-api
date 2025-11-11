@@ -230,6 +230,7 @@ export class SyncService implements OnModuleInit {
       let page = 1;
       let lastPage = Number.MAX_SAFE_INTEGER;
       let hasMorePages = true;
+      let totalItemsFromApi = 0;
 
       while (page <= lastPage && hasMorePages) {
         const result = await this.fetchVacancies(page, etlConfig.limit);
@@ -238,7 +239,13 @@ export class SyncService implements OnModuleInit {
           break;
         }
 
+        const itemsInThisPage = result.items.length;
+        totalItemsFromApi += itemsInThisPage;
         metrics.pagesFetched += 1;
+
+        this.logger.debug(
+          `Page ${page}: fetched ${itemsInThisPage} items (total so far: ${totalItemsFromApi})`
+        );
 
         const normalizedBatch = result.items
           .map((item) => this.normalizeVacancy(item))
@@ -266,6 +273,11 @@ export class SyncService implements OnModuleInit {
       }
 
       completedFullScan = !hasMorePages || page > lastPage;
+
+      this.logger.log(
+        `Full sync fetch completed: ${totalItemsFromApi} items from ${metrics.pagesFetched} pages, ` +
+        `${processedIds.size} unique IDs processed`
+      );
 
       if (completedFullScan) {
         await this.deactivateMissingVacancies(metrics, processedIds);
@@ -777,19 +789,115 @@ export class SyncService implements OnModuleInit {
     processedIds: Set<string>,
   ): Promise<void> {
     const now = new Date();
-    const whereCondition: Prisma.InternshipWhereInput = {
-      last_synced_at: { lt: metrics.startedAt },
-    };
+    
+    // First, get all internships that would be deactivated
+    const candidatesForDeactivation = await this.prisma.internship.findMany({
+      where: {
+        last_synced_at: { lt: metrics.startedAt },
+        ...(processedIds.size > 0 && { id_posisi: { notIn: Array.from(processedIds) } }),
+      },
+      select: {
+        id_posisi: true,
+        posisi: true,
+        nama_perusahaan: true,
+        pendaftaran_akhir: true,
+        is_active: true,
+        last_synced_at: true,
+      },
+    });
 
-    if (processedIds.size > 0) {
-      whereCondition.id_posisi = { notIn: Array.from(processedIds) };
+    if (candidatesForDeactivation.length === 0) {
+      this.logger.log('No internships to deactivate');
+      return;
     }
 
-    const deactivated = await this.prisma.internship.updateMany({
-      where: whereCondition,
-      data: { is_active: false, last_synced_at: now },
+    // Safety check: Don't deactivate too many at once
+    const totalActive = await this.prisma.internship.count({
+      where: { is_active: true },
     });
-    metrics.itemsDeactivated = deactivated.count;
+    
+    const maxDeactivations = Math.max(
+      this.config.etl.minDeactivationCount, 
+      Math.floor(totalActive * (this.config.etl.maxDeactivationPercent / 100))
+    );
+    
+    if (candidatesForDeactivation.length > maxDeactivations) {
+      this.logger.error(
+        `Too many candidates for deactivation (${candidatesForDeactivation.length} > ${maxDeactivations}). ` +
+        `This suggests a problem with the sync process. Config: max ${this.config.etl.maxDeactivationPercent}% of ${totalActive} active internships. ` +
+        'Skipping deactivation to prevent data loss.',
+      );
+      
+      // Log some examples for debugging
+      const examples = candidatesForDeactivation.slice(0, 5).map(v => 
+        `${v.id_posisi}: ${v.posisi} (${v.nama_perusahaan}) - expires: ${v.pendaftaran_akhir}`
+      );
+      this.logger.warn(`Examples of candidates: ${examples.join('; ')}`);
+      
+      return;
+    }
+
+    // Separate candidates into expired and potentially active
+    const expiredCandidates = candidatesForDeactivation.filter(v => {
+      if (!v.pendaftaran_akhir) return false; // No expiry date, keep active
+      return v.pendaftaran_akhir < now; // Expired
+    });
+
+    const potentiallyActiveCandidates = candidatesForDeactivation.filter(v => 
+      !v.pendaftaran_akhir || v.pendaftaran_akhir >= now
+    );
+
+    // Log potentially active candidates that would be deactivated
+    if (potentiallyActiveCandidates.length > 0) {
+      this.logger.warn(
+        `Found ${potentiallyActiveCandidates.length} potentially active internships that are missing from API:`,
+      );
+      
+      const examples = potentiallyActiveCandidates.slice(0, 3).map(v => 
+        `${v.id_posisi}: ${v.posisi} (${v.nama_perusahaan}) - expires: ${v.pendaftaran_akhir || 'no expiry'}`
+      );
+      this.logger.warn(`Examples: ${examples.join('; ')}`);
+      
+      // For potentially active internships, only deactivate if they're very old (>30 days not seen)
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const veryOldMissing = potentiallyActiveCandidates.filter(v => 
+        v.last_synced_at && v.last_synced_at < thirtyDaysAgo
+      );
+      
+      if (veryOldMissing.length > 0) {
+        this.logger.warn(
+          `Deactivating ${veryOldMissing.length} very old missing internships (>30 days not seen)`
+        );
+        
+        const deactivatedOld = await this.prisma.internship.updateMany({
+          where: {
+            id_posisi: { in: veryOldMissing.map(v => v.id_posisi) },
+          },
+          data: { is_active: false, last_synced_at: now },
+        });
+        
+        metrics.itemsDeactivated += deactivatedOld.count;
+      }
+    }
+
+    // Deactivate expired candidates
+    if (expiredCandidates.length > 0) {
+      this.logger.log(`Deactivating ${expiredCandidates.length} expired internships`);
+      
+      const deactivatedExpired = await this.prisma.internship.updateMany({
+        where: {
+          id_posisi: { in: expiredCandidates.map(v => v.id_posisi) },
+        },
+        data: { is_active: false, last_synced_at: now },
+      });
+      
+      metrics.itemsDeactivated += deactivatedExpired.count;
+    }
+
+    this.logger.log(
+      `Deactivation summary: ${expiredCandidates.length} expired, ` +
+      `${potentiallyActiveCandidates.length} potentially active (kept active)`
+    );
   }
 
   private async delay(ms: number): Promise<void> {

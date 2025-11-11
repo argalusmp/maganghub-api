@@ -9,7 +9,9 @@ type NumericKeys =
   | 'STOP_THRESHOLD'
   | 'HTTP_TIMEOUT_MS'
   | 'HTTP_MAX_RETRIES'
-  | 'HTTP_RETRY_DELAY_MS';
+  | 'HTTP_RETRY_DELAY_MS'
+  | 'MAX_DEACTIVATION_PERCENT'
+  | 'MIN_DEACTIVATION_COUNT';
 
 type Env = NodeJS.ProcessEnv & Partial<Record<NumericKeys, string>>;
 
@@ -40,6 +42,8 @@ export const configuration = (): AppConfig => {
       httpTimeoutMs: toNumber(env.HTTP_TIMEOUT_MS, 60_000),
       maxRetries: toNumber(env.HTTP_MAX_RETRIES, 3),
       retryDelayMs: toNumber(env.HTTP_RETRY_DELAY_MS, 2000),
+      maxDeactivationPercent: toNumber(env.MAX_DEACTIVATION_PERCENT, 10), // Max 10% of active internships
+      minDeactivationCount: toNumber(env.MIN_DEACTIVATION_COUNT, 10), // At least 10
     },
   };
 };

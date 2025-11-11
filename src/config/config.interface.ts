@@ -9,6 +9,8 @@ export interface EtlConfig {
   httpTimeoutMs: number;
   maxRetries: number;
   retryDelayMs: number;
+  maxDeactivationPercent: number;
+  minDeactivationCount: number;
 }
 
 export interface AppConfig {
