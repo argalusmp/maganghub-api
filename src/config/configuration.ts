@@ -6,7 +6,8 @@ type NumericKeys =
   | 'ETL_LIMIT'
   | 'NEW_WINDOW_HOURS'
   | 'REQUEST_DELAY_MS'
-  | 'STOP_THRESHOLD';
+  | 'STOP_THRESHOLD'
+  | 'HTTP_TIMEOUT_MS';
 
 type Env = NodeJS.ProcessEnv & Partial<Record<NumericKeys, string>>;
 
@@ -34,6 +35,7 @@ export const configuration = (): AppConfig => {
       newWindowHours: toNumber(env.NEW_WINDOW_HOURS, 72),
       requestDelayMs: toNumber(env.REQUEST_DELAY_MS, 800),
       stopThreshold: toNumber(env.STOP_THRESHOLD, 100),
+      httpTimeoutMs: toNumber(env.HTTP_TIMEOUT_MS, 60_000),
     },
   };
 };

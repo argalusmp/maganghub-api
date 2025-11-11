@@ -8,7 +8,7 @@ import { AppConfigService } from '../../config/app-config.service';
       inject: [AppConfigService],
       useFactory: (config: AppConfigService) => ({
         baseURL: config.maganghubBase,
-        timeout: 30_000,
+        timeout: config.etl.httpTimeoutMs,
       }),
     }),
   ],

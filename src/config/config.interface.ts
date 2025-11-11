@@ -6,6 +6,7 @@ export interface EtlConfig {
   newWindowHours: number;
   requestDelayMs: number;
   stopThreshold: number;
+  httpTimeoutMs: number;
 }
 
 export interface AppConfig {
