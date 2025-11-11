@@ -27,8 +27,8 @@ export const configuration = (): AppConfig => {
     frontendOrigin: env.FRONTEND_ORIGIN ?? '*',
     saweriaSecretToken: env.SAWERIA_SECRET_TOKEN ?? '',
     etl: {
-      fullCron: env.ETL_FULL_CRON ?? '0 2 * * *',
-      incrementalCron: env.ETL_INC_CRON ?? '0 * * * *',
+      fullCron: env.ETL_FULL_CRON ?? '0 3 * * *',
+      incrementalCron: env.ETL_INC_CRON ?? '0 */2 * * *',
       maxPages: toNumber(env.ETL_MAX_PAGES, 3),
       limit: toNumber(env.ETL_LIMIT, 50),
       newWindowHours: toNumber(env.NEW_WINDOW_HOURS, 72),
