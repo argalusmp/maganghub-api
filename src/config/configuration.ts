@@ -33,7 +33,7 @@ export const configuration = (): AppConfig => {
       limit: toNumber(env.ETL_LIMIT, 50),
       newWindowHours: toNumber(env.NEW_WINDOW_HOURS, 72),
       requestDelayMs: toNumber(env.REQUEST_DELAY_MS, 800),
-      stopThreshold: toNumber(env.STOP_THRESHOLD, 10),
+      stopThreshold: toNumber(env.STOP_THRESHOLD, 100),
     },
   };
 };
