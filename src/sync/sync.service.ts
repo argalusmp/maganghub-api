@@ -696,18 +696,28 @@ export class SyncService implements OnModuleInit {
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  private async saveVacancy(vacancy: VacancyPayload): Promise<'inserted' | 'updated'> {
+  private async saveVacancy(
+    vacancy: VacancyPayload, 
+    validProvinces?: Set<string>
+  ): Promise<'inserted' | 'updated'> {
     const now = new Date();
 
     // Validate kode_provinsi exists in provinces table
     let validatedKodeProvinsi = vacancy.kode_provinsi;
     if (validatedKodeProvinsi) {
-      const provinceExists = await this.prisma.province.findUnique({
-        where: { kode_propinsi: validatedKodeProvinsi },
-        select: { kode_propinsi: true },
-      });
+      // Use pre-validated set if available, otherwise check database
+      let isValid = false;
+      if (validProvinces) {
+        isValid = validProvinces.has(validatedKodeProvinsi);
+      } else {
+        const provinceExists = await this.prisma.province.findUnique({
+          where: { kode_propinsi: validatedKodeProvinsi },
+          select: { kode_propinsi: true },
+        });
+        isValid = !!provinceExists;
+      }
 
-      if (!provinceExists) {
+      if (!isValid) {
         this.logger.warn(
           `Province with kode_propinsi '${validatedKodeProvinsi}' not found for vacancy ${vacancy.id_posisi}. ` +
           `Setting kode_provinsi to null. Company: ${vacancy.nama_perusahaan}, Position: ${vacancy.posisi}`
@@ -716,33 +726,37 @@ export class SyncService implements OnModuleInit {
       }
     }
 
+    const dataToSave = {
+      posisi: vacancy.posisi,
+      deskripsi_posisi: vacancy.deskripsi_posisi,
+      jumlah_kuota: vacancy.jumlah_kuota,
+      jumlah_terdaftar: vacancy.jumlah_terdaftar,
+      program_studi: vacancy.program_studi,
+      jenjang: vacancy.jenjang,
+      nama_perusahaan: vacancy.nama_perusahaan,
+      kode_provinsi: validatedKodeProvinsi,
+      nama_provinsi: vacancy.nama_provinsi,
+      kode_kabupaten: vacancy.kode_kabupaten,
+      nama_kabupaten: vacancy.nama_kabupaten,
+      pendaftaran_awal: vacancy.pendaftaran_awal,
+      pendaftaran_akhir: vacancy.pendaftaran_akhir,
+      mulai: vacancy.mulai,
+      selesai: vacancy.selesai,
+      agency: vacancy.agency,
+      sub_agency: vacancy.sub_agency,
+      created_at: vacancy.created_at,
+      updated_at: vacancy.updated_at,
+      source_raw: vacancy.source_raw ?? Prisma.JsonNull,
+      last_synced_at: now,
+      is_active: true,
+    };
+
     try {
       await this.prisma.internship.create({
         data: {
           id_posisi: vacancy.id_posisi,
-          posisi: vacancy.posisi,
-          deskripsi_posisi: vacancy.deskripsi_posisi,
-          jumlah_kuota: vacancy.jumlah_kuota,
-          jumlah_terdaftar: vacancy.jumlah_terdaftar,
-          program_studi: vacancy.program_studi,
-          jenjang: vacancy.jenjang,
-          nama_perusahaan: vacancy.nama_perusahaan,
-          kode_provinsi: validatedKodeProvinsi,
-          nama_provinsi: vacancy.nama_provinsi,
-          kode_kabupaten: vacancy.kode_kabupaten,
-          nama_kabupaten: vacancy.nama_kabupaten,
-          pendaftaran_awal: vacancy.pendaftaran_awal,
-          pendaftaran_akhir: vacancy.pendaftaran_akhir,
-          mulai: vacancy.mulai,
-          selesai: vacancy.selesai,
-          agency: vacancy.agency,
-          sub_agency: vacancy.sub_agency,
-          created_at: vacancy.created_at,
-          updated_at: vacancy.updated_at,
-          source_raw: vacancy.source_raw ?? Prisma.JsonNull,
+          ...dataToSave,
           first_seen_at: now,
-          last_synced_at: now,
-          is_active: true,
         },
       });
       await this.prisma.newInternshipEvent.create({
@@ -753,35 +767,55 @@ export class SyncService implements OnModuleInit {
       });
       return 'inserted';
     } catch (error) {
-      if (error instanceof PrismaClientKnownRequestError && error.code === 'P2002') {
-        await this.prisma.internship.update({
-          where: { id_posisi: vacancy.id_posisi },
-          data: {
-            posisi: vacancy.posisi,
-            deskripsi_posisi: vacancy.deskripsi_posisi,
-            jumlah_kuota: vacancy.jumlah_kuota,
-            jumlah_terdaftar: vacancy.jumlah_terdaftar,
-            program_studi: vacancy.program_studi,
-            jenjang: vacancy.jenjang,
-            nama_perusahaan: vacancy.nama_perusahaan,
-            kode_provinsi: validatedKodeProvinsi,
-            nama_provinsi: vacancy.nama_provinsi,
-            kode_kabupaten: vacancy.kode_kabupaten,
-            nama_kabupaten: vacancy.nama_kabupaten,
-            pendaftaran_awal: vacancy.pendaftaran_awal,
-            pendaftaran_akhir: vacancy.pendaftaran_akhir,
-            mulai: vacancy.mulai,
-            selesai: vacancy.selesai,
-            agency: vacancy.agency,
-            sub_agency: vacancy.sub_agency,
-            created_at: vacancy.created_at,
-            updated_at: vacancy.updated_at,
-            source_raw: vacancy.source_raw ?? Prisma.JsonNull,
-            last_synced_at: now,
-            is_active: true,
-          },
-        });
-        return 'updated';
+      if (error instanceof PrismaClientKnownRequestError) {
+        // Handle unique constraint violation (duplicate id_posisi)
+        if (error.code === 'P2002') {
+          await this.prisma.internship.update({
+            where: { id_posisi: vacancy.id_posisi },
+            data: dataToSave,
+          });
+          return 'updated';
+        }
+        
+        // Handle foreign key constraint violation
+        if (error.code === 'P2003') {
+          this.logger.error(
+            `Foreign key constraint error for vacancy ${vacancy.id_posisi}. ` +
+            `kode_provinsi='${validatedKodeProvinsi}' (original='${vacancy.kode_provinsi}'). ` +
+            `Company: ${vacancy.nama_perusahaan}, Position: ${vacancy.posisi}. ` +
+            `Retrying with kode_provinsi=null...`
+          );
+          
+          // Retry with null kode_provinsi
+          validatedKodeProvinsi = null;
+          dataToSave.kode_provinsi = null;
+          
+          try {
+            await this.prisma.internship.create({
+              data: {
+                id_posisi: vacancy.id_posisi,
+                ...dataToSave,
+                first_seen_at: now,
+              },
+            });
+            await this.prisma.newInternshipEvent.create({
+              data: {
+                id_posisi: vacancy.id_posisi,
+                seen_at: now,
+              },
+            });
+            return 'inserted';
+          } catch (retryError) {
+            if (retryError instanceof PrismaClientKnownRequestError && retryError.code === 'P2002') {
+              await this.prisma.internship.update({
+                where: { id_posisi: vacancy.id_posisi },
+                data: dataToSave,
+              });
+              return 'updated';
+            }
+            throw retryError;
+          }
+        }
       }
       throw error;
     }
@@ -796,10 +830,37 @@ export class SyncService implements OnModuleInit {
       return;
     }
 
+    // Pre-validate all unique province codes in this batch
+    const uniqueProvinceCodes = new Set(
+      vacancies
+        .map(v => v.kode_provinsi)
+        .filter((code): code is string => code !== null && code !== undefined)
+    );
+
+    const validProvinces = new Set<string>();
+    if (uniqueProvinceCodes.size > 0) {
+      const existingProvinces = await this.prisma.province.findMany({
+        where: { kode_propinsi: { in: Array.from(uniqueProvinceCodes) } },
+        select: { kode_propinsi: true },
+      });
+      
+      existingProvinces.forEach(p => validProvinces.add(p.kode_propinsi));
+      
+      // Log invalid province codes
+      const invalidCodes = Array.from(uniqueProvinceCodes).filter(
+        code => !validProvinces.has(code)
+      );
+      if (invalidCodes.length > 0) {
+        this.logger.warn(
+          `Found ${invalidCodes.length} invalid province codes in batch: ${invalidCodes.join(', ')}`
+        );
+      }
+    }
+
     for (const chunk of this.chunkArray(vacancies, this.batchSaveConcurrency)) {
       await Promise.all(
         chunk.map(async (vacancy) => {
-          const action = await this.saveVacancy(vacancy);
+          const action = await this.saveVacancy(vacancy, validProvinces);
           processedIds.add(vacancy.id_posisi);
           if (action === 'inserted') {
             metrics.itemsInserted += 1;
