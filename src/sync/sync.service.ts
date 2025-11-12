@@ -62,10 +62,17 @@ interface VacancyFetchResult {
   pagination: VacancyResponseMeta;
 }
 
+interface ActiveFullSyncJob {
+  runId: string;
+  startedAt: Date;
+  promise: Promise<SyncRunMetrics>;
+}
+
 @Injectable()
 export class SyncService implements OnModuleInit {
   private readonly logger = new Logger(SyncService.name);
   private readonly batchSaveConcurrency = 10;
+  private activeFullSync: ActiveFullSyncJob | null = null;
 
   constructor(
     private readonly httpService: HttpService,
@@ -228,7 +235,90 @@ export class SyncService implements OnModuleInit {
   }
 
   async runFullSync(triggeredByCron = false): Promise<SyncRunMetrics> {
+    if (this.activeFullSync) {
+      this.logger.warn(
+        `Full sync already running as runId=${this.activeFullSync.runId}. Joining existing job.`,
+      );
+      return this.activeFullSync.promise;
+    }
+
+    const { promise } = await this.startFullSyncJob(triggeredByCron);
+    return promise;
+  }
+
+  async startFullSyncAsync(): Promise<{
+    runId: string;
+    startedAt: Date;
+    status: 'started' | 'already_running';
+  }> {
+    if (this.activeFullSync) {
+      return {
+        runId: this.activeFullSync.runId,
+        startedAt: this.activeFullSync.startedAt,
+        status: 'already_running',
+      };
+    }
+
+    const { run } = await this.startFullSyncJob(false);
+    return {
+      runId: run.id,
+      startedAt: run.startedAt,
+      status: 'started',
+    };
+  }
+
+  getActiveFullSyncStatus(): { inProgress: boolean; runId?: string; startedAt?: Date } {
+    if (!this.activeFullSync) {
+      return { inProgress: false };
+    }
+
+    return {
+      inProgress: true,
+      runId: this.activeFullSync.runId,
+      startedAt: this.activeFullSync.startedAt,
+    };
+  }
+
+  async listRecentRuns(limit = 5) {
+    const safeLimit = Math.min(Math.max(limit, 1), 50);
+    return this.prisma.syncRun.findMany({
+      orderBy: { started_at: 'desc' },
+      take: safeLimit,
+    });
+  }
+
+  async getRunById(id: string) {
+    return this.prisma.syncRun.findUnique({ where: { id } });
+  }
+
+  private async startFullSyncJob(triggeredByCron: boolean): Promise<{
+    run: { id: string; startedAt: Date };
+    promise: Promise<SyncRunMetrics>;
+  }> {
     const run = await this.startRunRecord('full');
+    const jobPromise = this.executeFullSync(run, triggeredByCron).catch((error) => {
+      throw error;
+    });
+
+    this.activeFullSync = {
+      runId: run.id,
+      startedAt: run.startedAt,
+      promise: jobPromise,
+    };
+
+    jobPromise.finally(() => {
+      if (this.activeFullSync?.runId === run.id) {
+        this.activeFullSync = null;
+      }
+    });
+
+    return { run, promise: jobPromise };
+  }
+
+  private async executeFullSync(
+    run: { id: string; startedAt: Date },
+    triggeredByCron: boolean,
+  ): Promise<SyncRunMetrics> {
     const metrics: SyncRunMetrics = {
       id: run.id,
       startedAt: run.startedAt,
